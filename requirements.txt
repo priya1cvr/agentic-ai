@@ -1,0 +1,14 @@
+google-genai
+pandas
+openpyxl
+python-dotenv
+requests
+ollama
+langchain 
+langchain-community
+openai
+faiss-cpu 
+sentence-transformers
+duckdb
+langgraph
+langchain-ollama
