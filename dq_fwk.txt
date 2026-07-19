@@ -1,0 +1,2009 @@
+dq_framework/
+├── config/
+│   ├── tables/
+│   │   ├── orders.yaml
+│   │   ├── customers.yaml
+│   │   └── employees.yaml
+│   └── dq_config.yaml
+├── src/
+│   ├── parser/
+│   │   └── rule_parser.py
+│   ├── engine/
+│   │   └── metadata_engine.py
+│   ├── resolver/
+│   │   └── partition_resolver.py
+│   ├── compiler/
+│   │   └── rule_compiler.py
+│   ├── generator/
+│   │   └── spark_sql_generator.py
+│   ├── executor/
+│   │   └── spark_executor.py
+│   ├── storage/
+│   │   └── result_store.py
+│   └── notifier/
+│       └── alert_manager.py
+├── tests/
+│   └── test_dq_framework.py
+├── requirements.txt
+└── main.py
+
+1. YAML Configuration Files
+config/tables/orders.yaml
+table:
+  name: orders
+  database: sales_db
+  description: "Order transactions table"
+  
+  schema:
+    columns:
+      - name: order_id
+        type: string
+        nullable: false
+        
+      - name: customer_id
+        type: string
+        nullable: false
+        
+      - name: order_date
+        type: date
+        nullable: false
+        
+      - name: order_amount
+        type: decimal(10,2)
+        nullable: false
+        
+      - name: status
+        type: string
+        nullable: true
+        
+      - name: created_at
+        type: timestamp
+        nullable: false
+
+  partitions:
+    type: date_hierarchy
+    columns:
+      - name: year
+        format: yyyy
+      - name: month
+        format: MM
+      - name: day
+        format: dd
+    strategy: dynamic  # dynamic/static/full
+
+  data_quality:
+    rules:
+      # Completeness Checks
+      - rule_id: ORD_COMP_001
+        name: "Order ID Null Check"
+        type: null_check
+        severity: critical
+        columns:
+          - order_id
+        condition: "order_id IS NULL"
+        threshold: 0
+        description: "Order ID should never be null"
+        
+      - rule_id: ORD_COMP_002
+        name: "Required Fields Completeness"
+        type: completeness
+        severity: critical
+        columns:
+          - customer_id
+          - order_date
+          - order_amount
+        threshold: 100.0  # 100% completeness expected
+        description: "Critical fields must be complete"
+
+      # Freshness Checks
+      - rule_id: ORD_FRESH_001
+        name: "Order Date Freshness"
+        type: freshness
+        severity: high
+        column: order_date
+        max_delay_hours: 24
+        description: "Orders should not be older than 24 hours"
+        
+      # Validity Checks
+      - rule_id: ORD_VAL_001
+        name: "Order Amount Positive"
+        type: value_range
+        severity: high
+        column: order_amount
+        min_value: 0
+        description: "Order amount should be positive"
+        
+      - rule_id: ORD_VAL_002
+        name: "Valid Order Status"
+        type: accepted_values
+        severity: medium
+        column: status
+        accepted_values:
+          - PENDING
+          - PROCESSING
+          - COMPLETED
+          - CANCELLED
+        threshold: 95.0
+        
+      # Uniqueness Checks
+      - rule_id: ORD_UNIQ_001
+        name: "Unique Order ID"
+        type: uniqueness
+        severity: critical
+        columns:
+          - order_id
+        threshold: 100.0
+
+      # Volume Checks
+      - rule_id: ORD_VOL_001
+        name: "Daily Order Volume"
+        type: row_count
+        severity: warning
+        min_count: 100
+        max_count: 1000000
+        description: "Daily order count should be within range"
+
+      # Custom SQL Checks
+      - rule_id: ORD_CUST_001
+        name: "Customer-Order Referential Integrity"
+        type: custom_sql
+        severity: critical
+        sql: |
+          SELECT COUNT(*) as failed_count 
+          FROM {database}.orders o
+          LEFT JOIN {database}.customers c 
+            ON o.customer_id = c.customer_id
+          WHERE c.customer_id IS NULL
+        threshold: 0
+        description: "All orders must reference valid customers"
+        
+      # Cross-table Validation
+      - rule_id: ORD_CROSS_001
+        name: "Order-Employee Cross Validation"
+        type: cross_table_validation
+        severity: high
+        reference_tables:
+          - employees
+          - departments
+        sql: |
+          SELECT COUNT(*) as failed_count
+          FROM {database}.orders o
+          JOIN {database}.employees e ON o.processed_by = e.employee_id
+          LEFT JOIN {database}.departments d ON e.dept_id = d.dept_id
+          WHERE d.department_status != 'ACTIVE'
+        threshold: 0
+
+  # Partition-specific rules
+  partition_rules:
+    - rule_id: ORD_PART_001
+      name: "Partition Completeness"
+      type: partition_completeness
+      severity: critical
+      lookback_days: 7
+      expected_partitions: all
+      
+    - rule_id: ORD_PART_002
+      name: "Partition Size Check"
+      type: partition_size
+      severity: warning
+      min_size_mb: 1
+      max_size_mb: 1024
+      
+config/tables/customers.yaml
+table:
+  name: customers
+  database: sales_db
+  description: "Customer master data"
+  
+  schema:
+    columns:
+      - name: customer_id
+        type: string
+        nullable: false
+      - name: customer_name
+        type: string
+        nullable: false
+      - name: email
+        type: string
+        nullable: false
+      - name: signup_date
+        type: date
+        nullable: false
+      - name: customer_segment
+        type: string
+        nullable: true
+
+  partitions:
+    type: static
+    columns:
+      - name: load_date
+        format: yyyy-MM-dd
+
+  data_quality:
+    rules:
+      - rule_id: CUST_COMP_001
+        name: "Customer Email Format"
+        type: regex_match
+        severity: high
+        column: email
+        pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+        threshold: 98.0
+        
+      - rule_id: CUST_VAL_001
+        name: "Valid Customer Segments"
+        type: accepted_values
+        severity: medium
+        column: customer_segment
+        accepted_values:
+          - PREMIUM
+          - STANDARD
+          - BASIC
+          - TRIAL
+        threshold: 90.0
+
+      - rule_id: CUST_UNIQ_001
+        name: "Unique Email Check"
+        type: uniqueness
+        severity: high
+        columns:
+          - email
+        threshold: 100.0
+        
+config/dq_config.yaml
+framework:
+  name: "Enterprise DQ Framework"
+  version: "1.0.0"
+  
+spark:
+  app_name: "DQ_Framework"
+  master: "yarn"
+  deploy_mode: "cluster"
+  executor_memory: "4g"
+  executor_cores: 2
+  num_executors: 10
+  driver_memory: "2g"
+  
+hive:
+  metastore_uri: "thrift://hive-metastore:9083"
+  default_database: "sales_db"
+  
+partitions:
+  parallel_execution: true
+  max_parallel_partitions: 5
+  partition_filter:
+    start_date: "2024-01-01"
+    end_date: "2024-12-31"
+
+storage:
+  results:
+    type: "hive"
+    database: "dq_results"
+    table: "dq_check_results"
+    partition_column: "check_date"
+    
+  metrics:
+    type: "postgresql"
+    host: "metrics-db.example.com"
+    port: 5432
+    database: "dq_metrics"
+    table: "rule_metrics"
+    
+alerting:
+  enabled: true
+  channels:
+    email:
+      enabled: true
+      smtp_host: "smtp.example.com"
+      smtp_port: 587
+      recipients:
+        critical: ["data-engineering@example.com", "oncall@example.com"]
+        high: ["data-engineering@example.com"]
+        medium: ["data-analysts@example.com"]
+        
+    slack:
+      enabled: true
+      webhook_url: "https://hooks.slack.com/services/xxx"
+      channels:
+        critical: "#data-alerts-critical"
+        high: "#data-alerts"
+        
+    teams:
+      enabled: false
+      
+    pagerduty:
+      enabled: true
+      api_key: "pd_api_key"
+      service_id: "data-quality"
+      
+thresholds:
+  failure_tolerance:
+    critical: 0  # Zero tolerance for critical failures
+    high: 5      # 5% tolerance
+    medium: 10
+    warning: 20
+    
+notification:
+  cooldown_minutes: 30
+  group_alerts: true
+  max_alerts_per_hour: 50
+  
+2. Core Framework Implementation
+src/parser/rule_parser.py
+
+import yaml
+from pathlib import Path
+from typing import Dict, List, Any
+from dataclasses import dataclass
+from datetime import datetime
+import jsonschema
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class DQRule:
+    rule_id: str
+    name: str
+    rule_type: str
+    severity: str
+    table: str
+    database: str
+    columns: List[str]
+    threshold: float
+    description: str
+    parameters: Dict[str, Any]
+
+class RuleParser:
+    """Parses YAML-based DQ rules with validation"""
+    
+    def __init__(self, config_path: str):
+        self.config_path = Path(config_path)
+        self.rules: List[DQRule] = []
+        self.tables = {}
+        
+    def load_yaml_config(self, file_path: str) -> Dict:
+        """Load and validate YAML configuration"""
+        try:
+            with open(file_path, 'r') as f:
+                config = yaml.safe_load(f)
+            self._validate_yaml_structure(config)
+            return config
+        except Exception as e:
+            logger.error(f"Failed to load YAML config {file_path}: {e}")
+            raise
+            
+    def _validate_yaml_structure(self, config: Dict):
+        """Validate YAML structure against schema"""
+        schema = {
+            'type': 'object',
+            'required': ['table'],
+            'properties': {
+                'table': {
+                    'type': 'object',
+                    'required': ['name', 'database', 'data_quality'],
+                    'properties': {
+                        'name': {'type': 'string'},
+                        'database': {'type': 'string'},
+                        'data_quality': {
+                            'type': 'object',
+                            'required': ['rules'],
+                            'properties': {
+                                'rules': {'type': 'array'}
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        try:
+            jsonschema.validate(config, schema)
+        except jsonschema.exceptions.ValidationError as e:
+            raise ValueError(f"Invalid YAML structure: {e}")
+            
+    def parse_all_configs(self) -> List[DQRule]:
+        """Parse all YAML configs in the config directory"""
+        config_dir = self.config_path / 'tables'
+        yaml_files = list(config_dir.glob('*.yaml')) + list(config_dir.glob('*.yml'))
+        
+        for yaml_file in yaml_files:
+            logger.info(f"Parsing config: {yaml_file}")
+            config = self.load_yaml_config(str(yaml_file))
+            self.tables[config['table']['name']] = config['table']
+            
+            # Parse rules
+            for rule_config in config['table']['data_quality']['rules']:
+                rule = self._parse_rule(rule_config, config['table'])
+                self.rules.append(rule)
+                
+        return self.rules
+    
+    def _parse_rule(self, rule_config: Dict, table_config: Dict) -> DQRule:
+        """Parse individual rule configuration"""
+        return DQRule(
+            rule_id=rule_config['rule_id'],
+            name=rule_config['name'],
+            rule_type=rule_config['type'],
+            severity=rule_config['severity'],
+            table=table_config['name'],
+            database=table_config['database'],
+            columns=rule_config.get('columns', []),
+            threshold=rule_config.get('threshold', 100.0),
+            description=rule_config.get('description', ''),
+            parameters={
+                'condition': rule_config.get('condition'),
+                'max_delay_hours': rule_config.get('max_delay_hours'),
+                'min_value': rule_config.get('min_value'),
+                'max_value': rule_config.get('max_value'),
+                'accepted_values': rule_config.get('accepted_values'),
+                'pattern': rule_config.get('pattern'),
+                'min_count': rule_config.get('min_count'),
+                'max_count': rule_config.get('max_count'),
+                'sql': rule_config.get('sql'),
+                'reference_tables': rule_config.get('reference_tables', []),
+                'lookback_days': rule_config.get('lookback_days'),
+            }
+        })
+
+src/engine/metadata_engine.py
+from typing import Dict, List, Any, Optional
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import pymysql
+from pyspark.sql import SparkSession
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class TableMetadata:
+    database: str
+    table_name: str
+    columns: List[Dict]
+    partitions: List[Dict]
+    location: str
+    file_format: str
+    owner: str
+    last_updated: datetime
+    row_count: Optional[int]
+    size_bytes: Optional[int]
+
+class MetadataEngine:
+    """Fetches and manages Hive table metadata"""
+    
+    def __init__(self, spark: SparkSession, hive_metastore_uri: str):
+        self.spark = spark
+        self.hive_metastore_uri = hive_metastore_uri
+        self.metadata_cache = {}
+        
+    def get_table_metadata(self, database: str, table_name: str) -> TableMetadata:
+        """Fetch complete table metadata from Hive metastore"""
+        cache_key = f"{database}.{table_name}"
+        
+        # Check cache first
+        if cache_key in self.metadata_cache:
+            return self.metadata_cache[cache_key]
+        
+        try:
+            # Use Spark catalog to get metadata
+            columns_df = self.spark.sql(f"DESCRIBE {database}.{table_name}")
+            columns = [row.asDict() for row in columns_df.collect()]
+            
+            # Get extended metadata
+            extended_df = self.spark.sql(f"DESCRIBE EXTENDED {database}.{table_name}")
+            extended_info = {row['col_name']: row['data_type'] for row in extended_df.collect()}
+            
+            # Parse partition information
+            partitions_df = self.spark.sql(f"SHOW PARTITIONS {database}.{table_name}")
+            partitions = [{'partition': row['partition']} for row in partitions_df.collect()]
+            
+            # Get table stats
+            stats = self._get_table_stats(database, table_name)
+            
+            metadata = TableMetadata(
+                database=database,
+                table_name=table_name,
+                columns=columns,
+                partitions=partitions,
+                location=extended_info.get('Location', ''),
+                file_format=extended_info.get('InputFormat', ''),
+                owner=extended_info.get('Owner', ''),
+                last_updated=datetime.now(),
+                row_count=stats.get('row_count'),
+                size_bytes=stats.get('size_bytes')
+            )
+            
+            # Cache the metadata
+            self.metadata_cache[cache_key] = metadata
+            return metadata
+            
+        except Exception as e:
+            logger.error(f"Failed to fetch metadata for {database}.{table_name}: {e}")
+            raise
+    
+    def _get_table_stats(self, database: str, table_name: str) -> Dict:
+        """Get table statistics"""
+        try:
+            stats_df = self.spark.sql(f"""
+                ANALYZE TABLE {database}.{table_name} COMPUTE STATISTICS
+            """)
+            return {
+                'row_count': None,
+                'size_bytes': None
+            }
+        except:
+            return {}
+    
+    def get_column_datatypes(self, database: str, table_name: str) -> Dict[str, str]:
+        """Get column name to datatype mapping"""
+        metadata = self.get_table_metadata(database, table_name)
+        return {col['col_name']: col['data_type'] for col in metadata.columns 
+                if not col['col_name'].startswith('#')}
+    
+    def get_partition_columns(self, database: str, table_name: str) -> List[str]:
+        """Get partition column names"""
+        metadata = self.get_table_metadata(database, table_name)
+        partition_cols = []
+        for col in metadata.columns:
+            if col.get('col_name', '').startswith('# Partition'):
+                break
+        return partition_cols
+    
+    def clear_cache(self):
+        """Clear metadata cache"""
+        self.metadata_cache.clear()
+        
+src/resolver/partition_resolver.py
+from typing import List, Dict, Any, Iterator, Tuple
+from datetime import datetime, timedelta
+from enum import Enum
+import logging
+
+logger = logging.getLogger(__name__)
+
+class PartitionStrategy(Enum):
+    FULL = "full"
+    INCREMENTAL = "incremental"
+    DYNAMIC = "dynamic"
+    CUSTOM = "custom"
+
+class PartitionResolver:
+    """Resolves partition ranges for DQ checks"""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.default_lookback_days = 7
+        self.partition_filter = config.get('partitions', {})
+        
+    def resolve_partitions(
+        self, 
+        table_config: Dict,
+        rule_config: Dict,
+        last_check_timestamp: datetime = None
+    ) -> List[Dict]:
+        """
+        Resolve which partitions to check based on strategy
+        Returns list of partition dictionaries
+        """
+        partition_config = table_config.get('partitions', {})
+        strategy = self._determine_strategy(partition_config, rule_config)
+        
+        if strategy == PartitionStrategy.FULL:
+            return self._resolve_full_partitions(table_config)
+        elif strategy == PartitionStrategy.INCREMENTAL:
+            return self._resolve_incremental_partitions(table_config, last_check_timestamp)
+        elif strategy == PartitionStrategy.DYNAMIC:
+            return self._resolve_dynamic_partitions(table_config, rule_config)
+        else:
+            return self._resolve_custom_partitions(table_config, rule_config)
+    
+    def _determine_strategy(self, partition_config: Dict, rule_config: Dict) -> PartitionStrategy:
+        """Determine partition strategy based on config and rule type"""
+        rule_type = rule_config.get('type', '')
+        
+        # Different rules might need different strategies
+        if rule_type in ['null_check', 'completeness', 'uniqueness']:
+            return PartitionStrategy.FULL
+        elif rule_type in ['freshness', 'row_count']:
+            return PartitionStrategy.DYNAMIC
+        elif rule_type == 'partition_completeness':
+            return PartitionStrategy.FULL
+        else:
+            return PartitionStrategy.INCREMENTAL
+    
+    def _resolve_full_partitions(self, table_config: Dict) -> List[Dict]:
+        """Get all partitions"""
+        # This would query Hive metastore for all partitions
+        # Simplified version returning date range
+        start_date = datetime.strptime(
+            self.partition_filter.get('start_date', '2024-01-01'), 
+            '%Y-%m-%d'
+        )
+        end_date = datetime.strptime(
+            self.partition_filter.get('end_date', datetime.now().strftime('%Y-%m-%d')),
+            '%Y-%m-%d'
+        )
+        
+        partitions = []
+        current = start_date
+        while current <= end_date:
+            partitions.append({
+                'year': current.strftime('%Y'),
+                'month': current.strftime('%m'),
+                'day': current.strftime('%d')
+            })
+            current += timedelta(days=1)
+        
+        return partitions
+    
+    def _resolve_incremental_partitions(
+        self, 
+        table_config: Dict, 
+        last_check_timestamp: datetime = None
+    ) -> List[Dict]:
+        """Get partitions since last check"""
+        if last_check_timestamp is None:
+            last_check_timestamp = datetime.now() - timedelta(hours=24)
+            
+        end_date = datetime.now()
+        
+        partitions = []
+        current = last_check_timestamp
+        while current <= end_date:
+            partitions.append({
+                'year': current.strftime('%Y'),
+                'month': current.strftime('%m'),
+                'day': current.strftime('%d')
+            })
+            current += timedelta(days=1)
+            
+        return partitions
+    
+    def _resolve_dynamic_partitions(
+        self, 
+        table_config: Dict, 
+        rule_config: Dict
+    ) -> List[Dict]:
+        """Resolve partitions based on rule requirements"""
+        lookback_days = rule_config.get('lookback_days', self.default_lookback_days)
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=lookback_days)
+        
+        partitions = []
+        current = start_date
+        while current <= end_date:
+            partitions.append({
+                'year': current.strftime('%Y'),
+                'month': current.strftime('%m'),
+                'day': current.strftime('%d')
+            })
+            current += timedelta(days=1)
+            
+        return partitions
+    
+    def _resolve_custom_partitions(
+        self, 
+        table_config: Dict, 
+        rule_config: Dict
+    ) -> List[Dict]:
+        """Custom partition resolution logic"""
+        # Implementation depends on specific requirements
+        return self._resolve_dynamic_partitions(table_config, rule_config)
+    
+    def generate_partition_filters(self, partitions: List[Dict]) -> List[str]:
+        """Generate SQL partition filter clauses"""
+        filters = []
+        for partition in partitions:
+            conditions = []
+            for key, value in partition.items():
+                conditions.append(f"{key}='{value}'")
+            filters.append(" AND ".join(conditions))
+        return filters
+
+src/compiler/rule_compiler.py
+from typing import Dict, List, Any
+from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
+
+@dataclass
+class CompiledRule:
+    rule_id: str
+    name: str
+    rule_type: str
+    severity: str
+    sql_query: str
+    expected_threshold: float
+    partition_info: Dict
+
+class RuleCompiler:
+    """Compiles YAML rules into executable SQL queries"""
+    
+    def __init__(self):
+        self.rule_templates = {
+            'null_check': self._compile_null_check,
+            'completeness': self._compile_completeness,
+            'freshness': self._compile_freshness,
+            'value_range': self._compile_value_range,
+            'accepted_values': self._compile_accepted_values,
+            'uniqueness': self._compile_uniqueness,
+            'row_count': self._compile_row_count,
+            'regex_match': self._compile_regex_match,
+            'custom_sql': self._compile_custom_sql,
+            'cross_table_validation': self._compile_cross_table_validation,
+        }
+    
+    def compile_rule(
+        self, 
+        rule_config: Dict, 
+        table_config: Dict, 
+        partition_filter: str = None
+    ) -> CompiledRule:
+        """Compile a single rule into executable SQL"""
+        rule_type = rule_config['type']
+        
+        if rule_type not in self.rule_templates:
+            raise ValueError(f"Unknown rule type: {rule_type}")
+        
+        compiler_func = self.rule_templates[rule_type]
+        sql_query = compiler_func(rule_config, table_config, partition_filter)
+        
+        return CompiledRule(
+            rule_id=rule_config['rule_id'],
+            name=rule_config['name'],
+            rule_type=rule_type,
+            severity=rule_config['severity'],
+            sql_query=sql_query,
+            expected_threshold=rule_config.get('threshold', 0),
+            partition_info={'filter': partition_filter} if partition_filter else {}
+        )
+    
+    def _add_partition_clause(self, query: str, partition_filter: str) -> str:
+        """Add partition filter to query if provided"""
+        if partition_filter:
+            if 'WHERE' in query.upper():
+                return query.replace('WHERE', f'WHERE {partition_filter} AND')
+            elif 'from' in query.lower():
+                # Find the table reference and add WHERE after it
+                return query + f' WHERE {partition_filter}'
+        return query
+    
+    def _compile_null_check(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile null check rule"""
+        columns = rule['columns']
+        database = table['database']
+        table_name = table['name']
+        
+        null_checks = " OR ".join([f"{col} IS NULL" for col in columns])
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            SUM(CASE WHEN {null_checks} THEN 1 ELSE 0 END) as failed_rows,
+            ROUND(SUM(CASE WHEN {null_checks} THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) as failure_percentage
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_completeness(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile completeness check for multiple columns"""
+        columns = rule['columns']
+        database = table['database']
+        table_name = table['name']
+        
+        completeness_checks = []
+        for col in columns:
+            completeness_checks.append(f"""
+                SUM(CASE WHEN {col} IS NOT NULL THEN 1 ELSE 0 END) as {col}_complete,
+                COUNT({col}) as {col}_total
+            """)
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            {','.join(completeness_checks)}
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_freshness(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile freshness check"""
+        column = rule['column']
+        max_delay_hours = rule.get('max_delay_hours', 24)
+        database = table['database']
+        table_name = table['name']
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            MAX({column}) as max_value,
+            MIN({column}) as min_value,
+            COUNT(*) as total_rows,
+            SUM(CASE 
+                WHEN {column} < DATE_SUB(CURRENT_TIMESTAMP(), {max_delay_hours} * 3600)
+                THEN 1 ELSE 0 
+            END) as stale_rows
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_value_range(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile value range check"""
+        column = rule['column']
+        min_value = rule.get('min_value')
+        max_value = rule.get('max_value')
+        database = table['database']
+        table_name = table['name']
+        
+        conditions = []
+        if min_value is not None:
+            conditions.append(f"{column} < {min_value}")
+        if max_value is not None:
+            conditions.append(f"{column} > {max_value}")
+        
+        condition_str = " OR ".join(conditions)
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            SUM(CASE WHEN {condition_str} THEN 1 ELSE 0 END) as failed_rows,
+            MIN({column}) as min_value,
+            MAX({column}) as max_value,
+            AVG({column}) as avg_value
+        FROM {database}.{table_name}
+        WHERE {column} IS NOT NULL
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_accepted_values(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile accepted values check"""
+        column = rule['column']
+        accepted_values = rule['accepted_values']
+        database = table['database']
+        table_name = table['name']
+        
+        values_str = ", ".join([f"'{v}'" for v in accepted_values])
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            COUNT(DISTINCT {column}) as distinct_values,
+            SUM(CASE WHEN {column} NOT IN ({values_str}) THEN 1 ELSE 0 END) as invalid_values,
+            COLLECT_SET(CASE WHEN {column} NOT IN ({values_str}) THEN {column} END) as invalid_value_list
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_uniqueness(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile uniqueness check"""
+        columns = rule['columns']
+        database = table['database']
+        table_name = table['name']
+        
+        columns_str = ", ".join(columns)
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            COUNT(DISTINCT {columns_str}) as unique_values,
+            COUNT(*) - COUNT(DISTINCT {columns_str}) as duplicate_count
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_row_count(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile row count check"""
+        min_count = rule.get('min_count', 0)
+        max_count = rule.get('max_count')
+        database = table['database']
+        table_name = table['name']
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as row_count,
+            CASE 
+                WHEN COUNT(*) < {min_count} THEN 'BELOW_MIN'
+                WHEN COUNT(*) > {max_count} THEN 'ABOVE_MAX'
+                ELSE 'OK'
+            END as status
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_regex_match(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile regex pattern match check"""
+        column = rule['column']
+        pattern = rule['pattern']
+        database = table['database']
+        table_name = table['name']
+        
+        query = f"""
+        SELECT 
+            '{rule['rule_id']}' as rule_id,
+            COUNT(*) as total_rows,
+            SUM(CASE WHEN {column} IS NOT NULL AND {column} NOT RLIKE '{pattern}' 
+                THEN 1 ELSE 0 END) as invalid_format_count,
+            ROUND(SUM(CASE WHEN {column} IS NOT NULL AND {column} NOT RLIKE '{pattern}' 
+                THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0), 2) as failure_percentage
+        FROM {database}.{table_name}
+        """
+        
+        return self._add_partition_clause(query, partition_filter)
+    
+    def _compile_custom_sql(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile custom SQL rule"""
+        sql = rule['sql']
+        database = table['database']
+        
+        # Replace placeholders
+        sql = sql.replace('{database}', database)
+        
+        return self._add_partition_clause(sql, partition_filter)
+    
+    def _compile_cross_table_validation(
+        self, rule: Dict, table: Dict, partition_filter: str = None
+    ) -> str:
+        """Compile cross-table validation rule"""
+        sql = rule['sql']
+        database = table['database']
+        
+        # Replace placeholders for all reference tables
+        sql = sql.replace('{database}', database)
+        
+        return self._add_partition_clause(sql, partition_filter)
+
+src/generator/spark_sql_generator.py
+from typing import Dict, List
+from pyspark.sql import SparkSession, DataFrame
+import logging
+
+logger = logging.getLogger(__name__)
+
+class SparkSQLGenerator:
+    """Generates and optimizes Spark SQL for DQ checks"""
+    
+    def __init__(self, spark: SparkSession):
+        self.spark = spark
+        self.query_cache = {}
+        
+    def generate_check_query(self, compiled_rule: 'CompiledRule') -> str:
+        """Generate optimized Spark SQL query for a compiled rule"""
+        base_query = compiled_rule.sql_query
+        
+        # Add query hints for optimization
+        optimized_query = self._add_optimization_hints(base_query)
+        
+        # Add result formatting
+        final_query = self._format_result_query(optimized_query, compiled_rule)
+        
+        return final_query
+    
+    def _add_optimization_hints(self, query: str) -> str:
+        """Add Spark SQL optimization hints"""
+        # Add broadcast hints for small tables
+        if 'JOIN' in query.upper():
+            query = query.replace('JOIN', '/*+ BROADCAST */ JOIN', 1)
+        
+        # Add partition hints
+        if 'WHERE' in query.upper() and 'year=' in query.lower():
+            query = f"-- Enable partition pruning\n{query}"
+            
+        return query
+    
+    def _format_result_query(self, query: str, compiled_rule: 'CompiledRule') -> str:
+        """Format query to include metadata in results"""
+        metadata_fields = f"""
+            '{compiled_rule.rule_id}' as rule_id,
+            '{compiled_rule.name}' as rule_name,
+            '{compiled_rule.rule_type}' as rule_type,
+            '{compiled_rule.severity}' as severity,
+            current_timestamp() as check_timestamp
+        """
+        
+        # Check if query already has rule_id
+        if 'rule_id' not in query:
+            query = f"""
+            SELECT 
+                {metadata_fields},
+                result.*
+            FROM ({query}) result
+            """
+            
+        return query
+    
+    def generate_batch_query(
+        self, 
+        compiled_rules: List['CompiledRule'],
+        union_results: bool = True
+    ) -> str:
+        """Generate batch query for multiple rules"""
+        if not union_results:
+            return [self.generate_check_query(rule) for rule in compiled_rules]
+        
+        individual_queries = [self.generate_check_query(rule) for rule in compiled_rules]
+        
+        return " UNION ALL ".join(individual_queries)
+    
+    def cache_query_result(self, rule_id: str, df: DataFrame):
+        """Cache query results for reuse"""
+        self.query_cache[rule_id] = df
+        
+    def get_cached_result(self, rule_id: str) -> DataFrame:
+        """Get cached query result"""
+        return self.query_cache.get(rule_id)
+    
+    def clear_cache(self):
+        """Clear query cache"""
+        self.query_cache.clear()
+
+src/executor/spark_executor.py
+from pyspark.sql import SparkSession, DataFrame
+from typing import List, Dict, Any
+from datetime import datetime
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+logger = logging.getLogger(__name__)
+
+class SparkExecutor:
+    """Executes DQ checks on Spark with parallel processing"""
+    
+    def __init__(self, spark: SparkSession, config: Dict):
+        self.spark = spark
+        self.config = config
+        self.spark_config = config.get('spark', {})
+        self._configure_spark()
+        
+    def _configure_spark(self):
+        """Configure Spark session for DQ checks"""
+        spark_conf = self.spark.sparkContext.getConf()
+        
+        for key, value in self.spark_config.items():
+            spark_conf.set(f"spark.{key}", str(value))
+            
+        # Enable adaptive query execution
+        spark_conf.set("spark.sql.adaptive.enabled", "true")
+        spark_conf.set("spark.sql.adaptive.coalescePartitions.enabled", "true")
+        
+    def execute_single_check(self, query: str) -> DataFrame:
+        """Execute a single DQ check"""
+        try:
+            logger.info(f"Executing query: {query[:200]}...")
+            df = self.spark.sql(query)
+            df.cache()  # Cache for potential reuse
+            return df
+        except Exception as e:
+            logger.error(f"Failed to execute query: {e}")
+            raise
+    
+    def execute_batch_checks(self, queries: List[str], parallel: bool = True) -> List[DataFrame]:
+        """Execute multiple DQ checks"""
+        results = []
+        
+        if parallel and len(queries) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(queries), 5)) as executor:
+                future_to_query = {
+                    executor.submit(self.execute_single_check, query): query 
+                    for query in queries
+                }
+                
+                for future in as_completed(future_to_query):
+                    query = future_to_query[future]
+                    try:
+                        result = future.result()
+                        results.append(result)
+                    except Exception as e:
+                        logger.error(f"Query failed: {query[:100]}... Error: {e}")
+        else:
+            for query in queries:
+                result = self.execute_single_check(query)
+                results.append(result)
+                
+        return results
+    
+    def execute_with_retry(
+        self, 
+        query: str, 
+        max_retries: int = 3, 
+        retry_delay: int = 60
+    ) -> DataFrame:
+        """Execute query with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                return self.execute_single_check(query)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Query failed (attempt {attempt + 1}/{max_retries}), retrying... Error: {e}")
+                    import time
+                    time.sleep(retry_delay)
+                else:
+                    raise
+    
+    def get_execution_metrics(self) -> Dict:
+        """Get Spark execution metrics"""
+        sc = self.spark.sparkContext
+        return {
+            'active_executors': sc._jsc.sc().getExecutorMemoryStatus().size(),
+            'total_tasks': sum(sc.statusTracker().getJobIdsForGroup(None)),
+            'executor_memory': self.spark_config.get('executor_memory', '4g'),
+            'executor_cores': self.spark_config.get('executor_cores', 2)
+        }
+    
+    def optimize_partition_strategy(self, table_name: str, partition_columns: List[str]):
+        """Optimize partition strategy for queries"""
+        for col in partition_columns:
+            self.spark.sql(f"ALTER TABLE {table_name} RECOVER PARTITIONS")
+            
+
+src/storage/result_store.py
+from pyspark.sql import SparkSession, DataFrame
+from typing import Dict, List
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+class ResultStore:
+    """Stores DQ check results in Hive and PostgreSQL"""
+    
+    def __init__(self, spark: SparkSession, config: Dict):
+        self.spark = spark
+        self.config = config
+        self.hive_config = config.get('storage', {}).get('results', {})
+        self.pg_config = config.get('storage', {}).get('metrics', {})
+        
+    def store_results(self, results_df: DataFrame, check_date: str = None):
+        """Store DQ check results in Hive"""
+        if check_date is None:
+            check_date = datetime.now().strftime('%Y-%m-%d')
+            
+        database = self.hive_config.get('database', 'dq_results')
+        table = self.hive_config.get('table', 'dq_check_results')
+        
+        try:
+            # Add metadata columns
+            enriched_df = results_df.withColumn('check_date', results_df.check_timestamp.cast('date'))
+            
+            # Write to Hive table with partition
+            enriched_df.write \
+                .mode('append') \
+                .partitionBy('check_date') \
+                .format('parquet') \
+                .saveAsTable(f"{database}.{table}")
+                
+            logger.info(f"Stored {enriched_df.count()} results in {database}.{table}")
+            
+        except Exception as e:
+            logger.error(f"Failed to store results in Hive: {e}")
+            raise
+    
+    def store_metrics(self, metrics: List[Dict]):
+        """Store aggregated metrics in PostgreSQL"""
+        try:
+            import psycopg2
+            from psycopg2.extras import execute_values
+            
+            conn = psycopg2.connect(
+                host=self.pg_config['host'],
+                port=self.pg_config['port'],
+                database=self.pg_config['database'],
+                user=self.pg_config.get('user', 'dq_user'),
+                password=self.pg_config.get('password')
+            )
+            
+            cursor = conn.cursor()
+            
+            # Insert metrics
+            insert_sql = """
+            INSERT INTO dq_metrics 
+                (rule_id, table_name, check_timestamp, total_rows, failed_rows, 
+                 failure_percentage, partition_info, status)
+            VALUES %s
+            """
+            
+            values = [
+                (
+                    m['rule_id'],
+                    m['table_name'],
+                    m['check_timestamp'],
+                    m['total_rows'],
+                    m['failed_rows'],
+                    m['failure_percentage'],
+                    m.get('partition_info', ''),
+                    m['status']
+                )
+                for m in metrics
+            ]
+            
+            execute_values(cursor, insert_sql, values)
+            conn.commit()
+            
+            logger.info(f"Stored {len(metrics)} metrics in PostgreSQL")
+            
+        except Exception as e:
+            logger.error(f"Failed to store metrics in PostgreSQL: {e}")
+            if conn:
+                conn.rollback()
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+    
+    def get_historical_results(
+        self, 
+        rule_id: str, 
+        days: int = 7
+    ) -> DataFrame:
+        """Get historical results for trend analysis"""
+        database = self.hive_config.get('database', 'dq_results')
+        table = self.hive_config.get('table', 'dq_check_results')
+        
+        query = f"""
+        SELECT *
+        FROM {database}.{table}
+        WHERE rule_id = '{rule_id}'
+            AND check_date >= date_sub(current_date(), {days})
+        ORDER BY check_timestamp DESC
+        """
+        
+        return self.spark.sql(query)
+    
+    def calculate_trends(self, rule_id: str, days: int = 30) -> Dict:
+        """Calculate trends for a specific rule"""
+        historical_df = self.get_historical_results(rule_id, days)
+        
+        historical_df.createOrReplaceTempView("historical_results")
+        
+        trends_query = """
+        SELECT 
+            rule_id,
+            check_date,
+            AVG(failure_percentage) as avg_failure_rate,
+            MIN(failure_percentage) as min_failure_rate,
+            MAX(failure_percentage) as max_failure_rate,
+            COUNT(*) as check_count
+        FROM historical_results
+        GROUP BY rule_id, check_date
+        ORDER BY check_date
+        """
+        
+        trends_df = self.spark.sql(trends_query)
+        return trends_df.toPandas().to_dict('records')
+
+src/notifier/alert_manager.py
+from typing import Dict, List
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timedelta
+import json
+import logging
+
+logger = logging.getLogger(__name__)
+
+class AlertManager:
+    """Manages alerts across multiple channels"""
+    
+    def __init__(self, config: Dict):
+        self.config = config
+        self.alert_config = config.get('alerting', {})
+        self.notification_config = config.get('notification', {})
+        self.alert_history = []
+        self.last_alert_time = {}
+        
+    def send_alert(self, rule_result: Dict, severity: str):
+        """Send alert through configured channels based on severity"""
+        if not self._should_send_alert(rule_result['rule_id'], severity):
+            return
+        
+        channels = self._get_channels_for_severity(severity)
+        
+        for channel in channels:
+            if channel == 'email' and self.alert_config.get('email', {}).get('enabled'):
+                self._send_email_alert(rule_result, severity)
+            elif channel == 'slack' and self.alert_config.get('slack', {}).get('enabled'):
+                self._send_slack_alert(rule_result, severity)
+            elif channel == 'teams' and self.alert_config.get('teams', {}).get('enabled'):
+                self._send_teams_alert(rule_result, severity)
+            elif channel == 'pagerduty' and self.alert_config.get('pagerduty', {}).get('enabled'):
+                self._send_pagerduty_alert(rule_result, severity)
+        
+        # Record alert
+        self.alert_history.append({
+            'timestamp': datetime.now(),
+            'rule_id': rule_result['rule_id'],
+            'severity': severity,
+            'result': rule_result
+        })
+        
+        # Update last alert time
+        self.last_alert_time[rule_result['rule_id']] = datetime.now()
+    
+    def _should_send_alert(self, rule_id: str, severity: str) -> bool:
+        """Check if alert should be sent based on cooldown"""
+        if rule_id not in self.last_alert_time:
+            return True
+            
+        cooldown = self.notification_config.get('cooldown_minutes', 30)
+        if datetime.now() - self.last_alert_time[rule_id] < timedelta(minutes=cooldown):
+            logger.info(f"Alert suppressed for {rule_id} due to cooldown")
+            return False
+            
+        return True
+    
+    def _get_channels_for_severity(self, severity: str) -> List[str]:
+        """Get notification channels for severity level"""
+        channels = []
+        
+        if self.alert_config.get('email', {}).get('recipients', {}).get(severity):
+            channels.append('email')
+        if self.alert_config.get('slack', {}).get('channels', {}).get(severity):
+            channels.append('slack')
+        if severity == 'critical' and self.alert_config.get('pagerduty', {}).get('enabled'):
+            channels.append('pagerduty')
+            
+        return channels
+    
+    def _send_email_alert(self, rule_result: Dict, severity: str):
+        """Send email alert"""
+        try:
+            email_config = self.alert_config['email']
+            recipients = email_config['recipients'].get(severity, [])
+            
+            if not recipients:
+                return
+            
+            msg = MIMEMultipart()
+            msg['Subject'] = f"[{severity.upper()}] DQ Alert - {rule_result['rule_name']}"
+            msg['From'] = email_config.get('from', 'dq-alerts@example.com')
+            msg['To'] = ', '.join(recipients)
+            
+            body = self._format_email_body(rule_result, severity)
+            msg.attach(MIMEText(body, 'html'))
+            
+            with smtplib.SMTP(email_config['smtp_host'], email_config['smtp_port']) as server:
+                if email_config.get('use_tls', True):
+                    server.starttls()
+                if email_config.get('username'):
+                    server.login(email_config['username'], email_config['password'])
+                server.send_message(msg)
+                
+            logger.info(f"Email alert sent for {rule_result['rule_id']}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send email alert: {e}")
+    
+    def _send_slack_alert(self, rule_result: Dict, severity: str):
+        """Send Slack alert"""
+        try:
+            slack_config = self.alert_config['slack']
+            webhook_url = slack_config['webhook_url']
+            channel = slack_config['channels'].get(severity, '#data-alerts')
+            
+            message = self._format_slack_message(rule_result, severity)
+            
+            payload = {
+                'channel': channel,
+                'text': message['text'],
+                'blocks': message['blocks']
+            }
+            
+            response = requests.post(webhook_url, json=payload)
+            response.raise_for_status()
+            
+            logger.info(f"Slack alert sent for {rule_result['rule_id']}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send Slack alert: {e}")
+    
+    def _send_pagerduty_alert(self, rule_result: Dict, severity: str):
+        """Send PagerDuty alert"""
+        try:
+            pd_config = self.alert_config['pagerduty']
+            
+            payload = {
+                'routing_key': pd_config['api_key'],
+                'event_action': 'trigger',
+                'payload': {
+                    'summary': f"DQ Alert: {rule_result['rule_name']}",
+                    'severity': severity,
+                    'source': 'DQ Framework',
+                    'component': rule_result['rule_id'],
+                    'custom_details': rule_result
+                }
+            }
+            
+            response = requests.post(
+                'https://events.pagerduty.com/v2/enqueue',
+                json=payload
+            )
+            response.raise_for_status()
+            
+            logger.info(f"PagerDuty alert sent for {rule_result['rule_id']}")
+            
+        except Exception as e:
+            logger.error(f"Failed to send PagerDuty alert: {e}")
+    
+    def _format_email_body(self, rule_result: Dict, severity: str) -> str:
+        """Format HTML email body"""
+        return f"""
+        <html>
+        <body>
+            <h2 style="color: {'red' if severity == 'critical' else 'orange'};">
+                Data Quality Alert - {severity.upper()}
+            </h2>
+            <h3>{rule_result['rule_name']}</h3>
+            <table border="1" cellpadding="5">
+                <tr><td>Rule ID</td><td>{rule_result['rule_id']}</td></tr>
+                <tr><td>Table</td><td>{rule_result['table_name']}</td></tr>
+                <tr><td>Total Rows</td><td>{rule_result['total_rows']}</td></tr>
+                <tr><td>Failed Rows</td><td>{rule_result['failed_rows']}</td></tr>
+                <tr><td>Failure %</td><td>{rule_result['failure_percentage']}%</td></tr>
+                <tr><td>Threshold</td><td>{rule_result.get('threshold', 'N/A')}%</td></tr>
+                <tr><td>Timestamp</td><td>{rule_result['check_timestamp']}</td></tr>
+            </table>
+            <p>Please investigate and take necessary action.</p>
+        </body>
+        </html>
+        """
+    
+    def _format_slack_message(self, rule_result: Dict, severity: str) -> Dict:
+        """Format Slack message with blocks"""
+        emoji = {
+            'critical': '🔴',
+            'high': '🟠',
+            'medium': '🟡',
+            'warning': '⚪'
+        }
+        
+        return {
+            'text': f"{emoji.get(severity, '⚪')} DQ Alert: {rule_result['rule_name']}",
+            'blocks': [
+                {
+                    'type': 'header',
+                    'text': {
+                        'type': 'plain_text',
+                        'text': f"{emoji.get(severity, '⚪')} Data Quality Alert"
+                    }
+                },
+                {
+                    'type': 'section',
+                    'fields': [
+                        {'type': 'mrkdwn', 'text': f"*Rule:* {rule_result['rule_name']}"},
+                        {'type': 'mrkdwn', 'text': f"*Severity:* {severity.upper()}"},
+                        {'type': 'mrkdwn', 'text': f"*Table:* {rule_result['table_name']}"},
+                        {'type': 'mrkdwn', 'text': f"*Failure Rate:* {rule_result['failure_percentage']}%"},
+                    ]
+                },
+                {
+                    'type': 'context',
+                    'elements': [
+                        {
+                            'type': 'mrkdwn',
+                            'text': f"Rule ID: {rule_result['rule_id']} | {rule_result['check_timestamp']}"
+                        }
+                    ]
+                }
+            ]
+        }
+
+main.py - Main Orchestrator
+#!/usr/bin/env python3
+"""
+Enterprise Data Quality Framework - Main Orchestrator
+"""
+
+import sys
+import logging
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List
+import argparse
+
+# Add src to path
+sys.path.append(str(Path(__file__).parent))
+
+from src.parser.rule_parser import RuleParser
+from src.engine.metadata_engine import MetadataEngine
+from src.resolver.partition_resolver import PartitionResolver
+from src.compiler.rule_compiler import RuleCompiler
+from src.generator.spark_sql_generator import SparkSQLGenerator
+from src.executor.spark_executor import SparkExecutor
+from src.storage.result_store import ResultStore
+from src.notifier.alert_manager import AlertManager
+
+from pyspark.sql import SparkSession
+import yaml
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('dq_framework.log'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+class DQFramework:
+    """Main orchestrator for the Data Quality Framework"""
+    
+    def __init__(self, config_path: str):
+        self.config_path = Path(config_path)
+        self.config = self._load_config()
+        self.spark = self._create_spark_session()
+        
+        # Initialize components
+        self.rule_parser = RuleParser(config_path)
+        self.metadata_engine = MetadataEngine(
+            self.spark, 
+            self.config['hive']['metastore_uri']
+        )
+        self.partition_resolver = PartitionResolver(self.config)
+        self.rule_compiler = RuleCompiler()
+        self.spark_generator = SparkSQLGenerator(self.spark)
+        self.spark_executor = SparkExecutor(self.spark, self.config)
+        self.result_store = ResultStore(self.spark, self.config)
+        self.alert_manager = AlertManager(self.config)
+        
+    def _load_config(self) -> Dict:
+        """Load main DQ configuration"""
+        config_file = self.config_path / 'dq_config.yaml'
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+        return config['framework']
+    
+    def _create_spark_session(self) -> SparkSession:
+        """Create and configure Spark session"""
+        spark_config = self.config['spark']
+        
+        builder = SparkSession.builder \
+            .appName(spark_config['app_name']) \
+            .master(spark_config.get('master', 'yarn')) \
+            .config("spark.sql.adaptive.enabled", "true") \
+            .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
+            .config("spark.sql.catalogImplementation", "hive") \
+            .enableHiveSupport()
+        
+        return builder.getOrCreate()
+    
+    def run_single_table_check(self, table_yaml: str) -> Dict:
+        """Run DQ checks for a single table"""
+        logger.info(f"Running DQ checks for table config: {table_yaml}")
+        
+        # Parse rules
+        config = self.rule_parser.load_yaml_config(table_yaml)
+        table_config = config['table']
+        rules = table_config['data_quality']['rules']
+        
+        results = []
+        
+        for rule_config in rules:
+            try:
+                # Get metadata
+                table_meta = self.metadata_engine.get_table_metadata(
+                    table_config['database'],
+                    table_config['name']
+                )
+                
+                # Resolve partitions
+                partitions = self.partition_resolver.resolve_partitions(
+                    table_config, 
+                    rule_config
+                )
+                
+                # Generate partition filters
+                partition_filters = self.partition_resolver.generate_partition_filters(
+                    partitions
+                )
+                
+                # For each partition, compile and execute
+                for partition_filter in partition_filters:
+                    # Compile rule
+                    compiled_rule = self.rule_compiler.compile_rule(
+                        rule_config,
+                        table_config,
+                        partition_filter
+                    )
+                    
+                    # Generate SQL
+                    sql_query = self.spark_generator.generate_check_query(compiled_rule)
+                    
+                    # Execute
+                    result_df = self.spark_executor.execute_single_check(sql_query)
+                    
+                    # Process results
+                    result_data = result_df.collect()[0].asDict()
+                    
+                    # Evaluate threshold
+                    failure_pct = result_data.get('failure_percentage', 0)
+                    threshold = rule_config.get('threshold', 0)
+                    
+                    if failure_pct > threshold:
+                        result_data['status'] = 'FAILED'
+                        self.alert_manager.send_alert(result_data, rule_config['severity'])
+                    else:
+                        result_data['status'] = 'PASSED'
+                    
+                    results.append(result_data)
+                    
+            except Exception as e:
+                logger.error(f"Failed to execute rule {rule_config['rule_id']}: {e}")
+                results.append({
+                    'rule_id': rule_config['rule_id'],
+                    'status': 'ERROR',
+                    'error': str(e),
+                    'check_timestamp': datetime.now()
+                })
+        
+        # Store results
+        if results:
+            results_df = self.spark.createDataFrame(results)
+            self.result_store.store_results(results_df)
+            
+        return {'table': table_config['name'], 'results': results}
+    
+    def run_all_checks(self) -> Dict:
+        """Run all DQ checks for all configured tables"""
+        logger.info("Starting full DQ check run")
+        
+        # Parse all configurations
+        rules = self.rule_parser.parse_all_configs()
+        
+        all_results = {}
+        
+        # Group rules by table for efficient processing
+        tables_config = {}
+        config_dir = self.config_path / 'tables'
+        for yaml_file in config_dir.glob('*.yaml'):
+            config = self.rule_parser.load_yaml_config(str(yaml_file))
+            table_name = config['table']['name']
+            tables_config[table_name] = str(yaml_file)
+        
+        # Process each table
+        for table_name, config_file in tables_config.items():
+            try:
+                results = self.run_single_table_check(config_file)
+                all_results[table_name] = results
+            except Exception as e:
+                logger.error(f"Failed to process table {table_name}: {e}")
+                all_results[table_name] = {'status': 'ERROR', 'error': str(e)}
+        
+        # Generate summary
+        summary = self._generate_summary(all_results)
+        
+        # Store summary metrics
+        self.result_store.store_metrics(summary['metrics'])
+        
+        logger.info(f"DQ check completed. Summary: {summary['overall']}")
+        return all_results
+    
+    def _generate_summary(self, results: Dict) -> Dict:
+        """Generate summary of all DQ checks"""
+        total_rules = 0
+        passed = 0
+        failed = 0
+        errors = 0
+        metrics = []
+        
+        for table_name, table_results in results.items():
+            for result in table_results.get('results', []):
+                total_rules += 1
+                status = result.get('status', 'ERROR')
+                
+                if status == 'PASSED':
+                    passed += 1
+                elif status == 'FAILED':
+                    failed += 1
+                else:
+                    errors += 1
+                
+                metrics.append({
+                    'rule_id': result.get('rule_id'),
+                    'table_name': table_name,
+                    'check_timestamp': result.get('check_timestamp'),
+                    'total_rows': result.get('total_rows', 0),
+                    'failed_rows': result.get('failed_rows', 0),
+                    'failure_percentage': result.get('failure_percentage', 0),
+                    'status': status
+                })
+        
+        return {
+            'overall': {
+                'total_rules': total_rules,
+                'passed': passed,
+                'failed': failed,
+                'errors': errors,
+                'pass_rate': (passed / total_rules * 100) if total_rules > 0 else 0
+            },
+            'metrics': metrics
+        }
+    
+    def run_incremental_check(self):
+        """Run incremental DQ checks for new data only"""
+        logger.info("Running incremental DQ check")
+        # Implementation for incremental checks
+        pass
+    
+    def cleanup(self):
+        """Cleanup resources"""
+        self.spark.stop()
+
+def main():
+    parser = argparse.ArgumentParser(description='Data Quality Framework')
+    parser.add_argument(
+        '--config', 
+        type=str, 
+        default='config',
+        help='Path to configuration directory'
+    )
+    parser.add_argument(
+        '--table', 
+        type=str, 
+        help='Run checks for specific table only'
+    )
+    parser.add_argument(
+        '--mode', 
+        type=str, 
+        choices=['full', 'incremental', 'single'],
+        default='full',
+        help='Execution mode'
+    )
+    
+    args = parser.parse_args()
+    
+    # Initialize framework
+    dq_framework = DQFramework(args.config)
+    
+    try:
+        if args.mode == 'single' and args.table:
+            # Run for single table
+            config_file = Path(args.config) / 'tables' / f"{args.table}.yaml"
+            if config_file.exists():
+                dq_framework.run_single_table_check(str(config_file))
+            else:
+                logger.error(f"Config file not found: {config_file}")
+        elif args.mode == 'incremental':
+            dq_framework.run_incremental_check()
+        else:
+            # Run full check
+            dq_framework.run_all_checks()
+    finally:
+        dq_framework.cleanup()
+
+if __name__ == "__main__":
+    main()
+    
+3. Tests
+tests/test_dq_framework.py
+import unittest
+from unittest.mock import Mock, patch
+import yaml
+from pathlib import Path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent))
+
+from src.parser.rule_parser import RuleParser
+from src.compiler.rule_compiler import RuleCompiler
+from src.resolver.partition_resolver import PartitionResolver
+
+class TestRuleParser(unittest.TestCase):
+    def setUp(self):
+        self.parser = RuleParser('config')
+        
+    def test_load_valid_yaml(self):
+        yaml_content = """
+        table:
+          name: test_table
+          database: test_db
+          data_quality:
+            rules:
+              - rule_id: TEST_001
+                name: Test Rule
+                type: null_check
+                severity: critical
+                columns:
+                  - test_column
+                threshold: 0
+        """
+        # Mock file reading
+        with patch('builtins.open', unittest.mock.mock_open(read_data=yaml_content)):
+            config = self.parser.load_yaml_config('test.yaml')
+            self.assertEqual(config['table']['name'], 'test_table')
+    
+    def test_invalid_yaml_structure(self):
+        invalid_yaml = """
+        invalid_key: value
+        """
+        with patch('builtins.open', unittest.mock.mock_open(read_data=invalid_yaml)):
+            with self.assertRaises(ValueError):
+                self.parser.load_yaml_config('test.yaml')
+
+class TestRuleCompiler(unittest.TestCase):
+    def setUp(self):
+        self.compiler = RuleCompiler()
+        self.table_config = {
+            'database': 'test_db',
+            'name': 'test_table'
+        }
+    
+    def test_compile_null_check(self):
+        rule = {
+            'rule_id': 'TEST_001',
+            'name': 'Null Check',
+            'type': 'null_check',
+            'severity': 'critical',
+            'columns': ['col1', 'col2'],
+            'threshold': 0
+        }
+        
+        compiled = self.compiler.compile_rule(rule, self.table_config)
+        self.assertIn('IS NULL', compiled.sql_query)
+        self.assertIn('test_db.test_table', compiled.sql_query)
+    
+    def test_compile_value_range(self):
+        rule = {
+            'rule_id': 'TEST_002',
+            'name': 'Range Check',
+            'type': 'value_range',
+            'severity': 'high',
+            'column': 'amount',
+            'min_value': 0,
+            'max_value': 1000,
+            'threshold': 0
+        }
+        
+        compiled = self.compiler.compile_rule(rule, self.table_config)
+        self.assertIn('amount < 0', compiled.sql_query)
+        self.assertIn('amount > 1000', compiled.sql_query)
+
+class TestPartitionResolver(unittest.TestCase):
+    def setUp(self):
+        self.config = {
+            'partitions': {
+                'start_date': '2024-01-01',
+                'end_date': '2024-01-05'
+            }
+        }
+        self.resolver = PartitionResolver(self.config)
+    
+    def test_resolve_full_partitions(self):
+        table_config = {
+            'partitions': {
+                'type': 'date_hierarchy',
+                'columns': ['year', 'month', 'day']
+            }
+        }
+        
+        partitions = self.resolver.resolve_partitions(table_config, {})
+        self.assertTrue(len(partitions) > 0)
+    
+    def test_generate_partition_filters(self):
+        partitions = [
+            {'year': '2024', 'month': '01', 'day': '01'},
+            {'year': '2024', 'month': '01', 'day': '02'}
+        ]
+        
+        filters = self.resolver.generate_partition_filters(partitions)
+        self.assertEqual(len(filters), 2)
+        self.assertIn("year='2024'", filters[0])
+
+if __name__ == '__main__':
+    unittest.main()
+    
+
+4. Requirements
+requirements.txt
+pyspark==3.5.0
+pyyaml==6.0.1
+jsonschema==4.20.0
+psycopg2-binary==2.9.9
+pymysql==1.1.0
+requests==2.31.0
+pandas==2.1.4
+dataclasses==0.6
+typing-extensions==4.9.0
+
+5. Usage Examples
+Running the Framework
+# Install dependencies
+pip install -r requirements.txt
+
+# Run full DQ checks
+python main.py --config config --mode full
+
+# Run single table check
+python main.py --config config --table orders --mode single
+
+# Run incremental checks
+python main.py --config config --mode incremental
+
+# Schedule via cron
+# 0 */6 * * * cd /path/to/dq_framework && python main.py --config config --mode incremental
+
+Docker Deployment
+dockerfile
+
+# Dockerfile
+FROM apache/spark-py:v3.5.0
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY . .
+
+ENTRYPOINT ["python", "main.py"]
+CMD ["--config", "config", "--mode", "full"]
+
+Airflow DAG Integration
+
+# airflow_dag.py
+from airflow import DAG
+from airflow.operators.python_operator import PythonOperator
+from datetime import datetime, timedelta
+
+default_args = {
+    'owner': 'data-engineering',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'email_on_failure': True,
+    'email_on_retry': False,
+    'retries': 2,
+    'retry_delay': timedelta(minutes=5)
+}
+
+dag = DAG(
+    'dq_framework',
+    default_args=default_args,
+    description='Data Quality Checks',
+    schedule_interval='0 */6 * * *',
+    catchup=False
+)
+
+def run_dq_checks(**context):
+    from main import DQFramework
+    dq = DQFramework('config')
+    dq.run_all_checks()
+
+t1 = PythonOperator(
+    task_id='run_dq_checks',
+    python_callable=run_dq_checks,
+    dag=dag
+)
