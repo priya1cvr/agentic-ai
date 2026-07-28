@@ -1,0 +1,75 @@
+# Enterprise Spark Observability Framework -- global config
+
+cluster:
+  # YARN ResourceManager REST endpoints. List both RMs for HA -- the collector
+  # auto-detects the active one (standby RM returns a redirect / 403).
+  yarn_rm_urls:
+    - "http://rm1.cluster.internal:8088"
+    - "http://rm2.cluster.internal:8088"
+  # Spark History Server REST base URL
+  history_server_url: "http://spark-history.cluster.internal:18080"
+  kerberos_enabled: true          # if true, collectors use requests-kerberos auth
+
+collection:
+  lookback_hours: 26              # small overlap window so nothing between runs is missed
+  max_parallel_requests: 20       # thread pool size for per-app History Server calls
+  request_timeout_sec: 15
+  request_retries: 3
+
+hive:
+  database: spark_obsv
+  app_metrics_table: spark_obsv.app_metrics
+  executor_metrics_table: spark_obsv.executor_metrics
+  stage_metrics_table: spark_obsv.stage_metrics
+  queue_metrics_table: spark_obsv.queue_metrics
+  flags_table: spark_obsv.flags
+
+# Optional: mirror metrics table into Postgres for Grafana (Hive isn't always
+# a supported/performant Grafana data source in most enterprise setups).
+jdbc:
+  enabled: true
+  url: "jdbc:postgresql://obsv-postgres.internal:5432/spark_obsv"
+  properties:
+    user: obsv_service
+    password: "${OBSV_DB_PASSWORD}"
+    driver: org.postgresql.Driver
+
+thresholds:
+  skew:
+    ratio_warning: 3.0            # max_task_duration / median_task_duration
+    ratio_critical: 8.0
+    min_tasks_to_evaluate: 20      # skip tiny stages, too noisy to be meaningful
+  small_file:
+    avg_bytes_per_task_warning: 10485760      # 10 MB
+    avg_bytes_per_task_critical: 1048576       # 1 MB
+    min_tasks_to_evaluate: 50
+  underutilization:
+    cpu_time_ratio_warning: 0.4     # (sum task time) / (allocated core-seconds) below this = underused
+    memory_ratio_warning: 0.3       # peak JVM used / max_memory below this = oversized executors
+    min_duration_sec: 120           # ignore short-lived apps, allocation lag dominates
+  sla:
+    default_sla_minutes: 60         # fallback if app isn't in the sla_overrides map below
+    breach_probability_warning: 0.5
+    breach_probability_critical: 0.8
+    sla_overrides:
+      nightly_customer_load: 90
+      hourly_orders_ingest: 20
+      employee_sync_job: 45
+
+trend:
+  compare_windows_days: [7, 30]
+  min_history_runs: 3               # need at least this many prior runs to trust a trend comparison
+
+alerting:
+  slack_webhook: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+  teams_webhook: "https://outlook.office.com/webhook/XXX"
+  smtp:
+    host: smtp.company.com
+    port: 25
+    from_addr: spark-observability@company.com
+    to_addrs:
+      - data-platform-team@company.com
+
+report:
+  output_dir: "/tmp/spark_obsv_reports"
+  top_n_offenders: 15
