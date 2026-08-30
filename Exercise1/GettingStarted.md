@@ -77,6 +77,17 @@ docker run -d \
   -p 4566:4566 \
   -p 4510-4559:4510-4559 \
   localstack/localstack:3.8
+
+or
+
+docker run -d \
+  --name localstack \
+  -p 4566:4566 \
+  -p 4510-4559:4510-4559 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -e DOCKER_HOST=unix:///var/run/docker.sock \
+  -e LAMBDA_EXECUTOR=docker \
+  localstack/localstack:3.8
 ```
 
 ### Verify LocalStack is running
