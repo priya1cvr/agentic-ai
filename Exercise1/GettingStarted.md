@@ -8,6 +8,8 @@ The customer also wants to ensure that the application has decoupled application
 components.
 The following architectural diagram shows the flow for the serverless solution that you will
 build.
+
+ This exercise is adapted from a Coursera AWS serverless architecture lab and implemented locally using LocalStack and Terraform for learning purposes. The goal is to understand the architecture and workflow without paying for real AWS services.
  
  ![Architecture diagram for exercise 1](./image.png)
 
